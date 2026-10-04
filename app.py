@@ -7,6 +7,60 @@ app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+WEBHOOK_URL = "https://mening-huquqim-bot-yangi.onrender.com/webhook"
+
+def setup_webhook():
+    try:
+        response = requests.post(
+            f"{TELEGRAM_API}/setWebhook",
+            data={"url": WEBHOOK_URL},
+            timeout=15
+        )
+        print("Webhook:", response.text)
+    except Exception as e:
+        print("Webhook setup error:", e)
+
+
+# Oddiy vaqtinchalik xotira.
+# Keyinchalik ma'lumotlar bazasiga o'tkazamiz.
+USERS = {}
+
+
+# =========================
+# TELEGRAM YORDAMCHI FUNKSIYALAR
+# =========================
+
+def send_message(chat_id, text, keyboard=None):
+    data = {
+        "chat_id": chat_id,
+        "text": text
+    }
+
+    if keyboard:
+        data["reply_markup"] = keyboard
+
+    try:
+        requests.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json=data,
+            timeout=15
+        )
+    except Exception as e:
+        print("send_message error:", e)
+
+
+def send_document(chat_id, file_id):
+    try:
+        requests.post(
+            f"{TELEGRAM_API}/sendDocument",
+            json={
+                "chat_id": chat_id,
+                "document": file_id
+            },
+            timeout=15
+        )
+    except Exception as e:
+        print("send_document error:", e)
 # Oddiy vaqtinchalik xotira.
 # Keyinchalik ma'lumotlar bazasiga o'tkazamiz.
 USERS = {}
@@ -895,6 +949,8 @@ def webhook():
 # =========================
 # ISHGA TUSHISH
 # =========================
+
+setup_webhook()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
