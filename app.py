@@ -1,694 +1,968 @@
 import os
 import requests
 from flask import Flask, request, jsonify
+from openai import OpenAI
 
 app = Flask(__name__)
 
+# =========================================================
+# SOZLAMALAR
+# =========================================================
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+# Kerak bo'lsa Render Environment Variables orqali o'zgartirish mumkin
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-6-luna")
+
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-WEBHOOK_URL = "https://mening-huquqim-bot-yangi.onrender.com/webhook"
+WEBHOOK_URL = (
+    "https://mening-huquqim-bot-yangi.onrender.com/webhook"
+)
 
-def setup_webhook():
+# OpenAI client
+openai_client = None
+
+if OPENAI_API_KEY:
     try:
-        response = requests.post(
-            f"{TELEGRAM_API}/setWebhook",
-            data={"url": WEBHOOK_URL},
-            timeout=15
-        )
-        print("Webhook:", response.text)
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
     except Exception as e:
-        print("Webhook setup error:", e)
+        print("OpenAI client xatosi:", e)
 
 
-# Oddiy vaqtinchalik xotira.
-# Keyinchalik ma'lumotlar bazasiga o'tkazamiz.
+# =========================================================
+# FOYDALANUVCHILAR HOLATI
+# =========================================================
+
 USERS = {}
 
 
-# =========================
-# TELEGRAM YORDAMCHI FUNKSIYALAR
-# =========================
-
-def send_message(chat_id, text, keyboard=None):
-    data = {
-        "chat_id": chat_id,
-        "text": text
-    }
-
-    if keyboard:
-        data["reply_markup"] = keyboard
-
-    try:
-        requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json=data,
-            timeout=15
-        )
-    except Exception as e:
-        print("send_message error:", e)
-
-
-def send_document(chat_id, file_id):
-    try:
-        requests.post(
-            f"{TELEGRAM_API}/sendDocument",
-            json={
-                "chat_id": chat_id,
-                "document": file_id
-            },
-            timeout=15
-        )
-    except Exception as e:
-        print("send_document error:", e)
-# Oddiy vaqtinchalik xotira.
-# Keyinchalik ma'lumotlar bazasiga o'tkazamiz.
-USERS = {}
-
-
-# =========================
-# TELEGRAM YORDAMCHI FUNKSIYALAR
-# =========================
-
-def send_message(chat_id, text, keyboard=None):
-    data = {
-        "chat_id": chat_id,
-        "text": text
-    }
-
-    if keyboard:
-        data["reply_markup"] = keyboard
-
-    try:
-        requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json=data,
-            timeout=15
-        )
-    except Exception as e:
-        print("send_message error:", e)
-
-
-def send_document(chat_id, file_id):
-    try:
-        requests.post(
-            f"{TELEGRAM_API}/sendDocument",
-            json={
-                "chat_id": chat_id,
-                "document": file_id
-            },
-            timeout=15
-        )
-    except Exception as e:
-        print("send_document error:", e)
-
-
-# =========================
-# KLAVIATURALAR
-# =========================
-
-def main_keyboard():
+def new_user():
     return {
-        "keyboard": [
-            [{"text": "🛒 Mahsulot muammosi"}],
-            [{"text": "💰 Pulni qaytarish"}, {"text": "🛠 Kafolat"}],
-            [{"text": "📎 Kerakli hujjatlar"}, {"text": "⚖️ Huquqlarim"}],
-            [{"text": "📞 Aloqa"}],
-            [{"text": "💼 Qo‘shimcha xizmatlar"}]
-        ],
-        "resize_keyboard": True
+        "step": "main",
+
+        "product": "",
+        "purchase_date": "",
+        "problem": "",
+
+        "seller_contacted": "",
+        "seller_response": "",
+
+        "service_contacted": "",
+        "service_response": "",
+
+        "receipt": "",
+        "warranty": "",
+
+        "installment": "",
+        "contract_file_id": "",
+
+        "evidence_files": [],
+
+        "case_finished": False,
     }
 
-
-def yes_no_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "✅ Ha"}, {"text": "❌ Yo‘q"}]
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": True
-    }
-
-
-def skip_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "⏭ O‘tkazib yuborish"}],
-            [{"text": "⬅️ Orqaga"}]
-        ],
-        "resize_keyboard": True
-    }
-
-
-def back_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "⬅️ Orqaga"}],
-            [{"text": "🏠 Bosh menyu"}]
-        ],
-        "resize_keyboard": True
-    }
-
-
-def finish_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "🏁 Yakunlash"}],
-            [{"text": "⬅️ Orqaga"}]
-        ],
-        "resize_keyboard": True
-    }
-
-
-def paid_services_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "📝 Ariza tayyorlash"}],
-            [{"text": "📑 Hujjat tahlili"}],
-            [{"text": "🧭 Individual yo‘l xaritasi"}],
-            [{"text": "📄 Shartnoma tekshiruvi"}],
-            [{"text": "📂 Murojaat paketi"}],
-            [{"text": "👨‍💼 Mutaxassis bilan aloqa"}],
-            [{"text": "⬅️ Orqaga"}]
-        ],
-        "resize_keyboard": True
-    }
-
-
-# =========================
-# FOYDALANUVCHI MA'LUMOTI
-# =========================
 
 def get_user(chat_id):
     if chat_id not in USERS:
-        USERS[chat_id] = {
-            "section": None,
-            "step": None,
-            "product": "",
-            "purchase_date": "",
-            "problem": "",
-            "seller_contacted": "",
-            "seller_response": "",
-            "service_contacted": "",
-            "service_response": "",
-            "receipt": "",
-            "warranty": "",
-            "installment": "",
-            "contract": "",
-            "evidence": "",
-            "evidence_files": []
-        }
+        USERS[chat_id] = new_user()
 
     return USERS[chat_id]
 
 
 def reset_user(chat_id):
-    USERS[chat_id] = {
-        "section": None,
-        "step": None,
-        "product": "",
-        "purchase_date": "",
-        "problem": "",
-        "seller_contacted": "",
-        "seller_response": "",
-        "service_contacted": "",
-        "service_response": "",
-        "receipt": "",
-        "warranty": "",
-        "installment": "",
-        "contract": "",
-        "evidence": "",
-        "evidence_files": []
+    USERS[chat_id] = new_user()
+    return USERS[chat_id]
+
+
+# =========================================================
+# TELEGRAM FUNKSIYALARI
+# =========================================================
+
+def send_message(chat_id, text, keyboard=None):
+    data = {
+        "chat_id": chat_id,
+        "text": text,
     }
 
+    if keyboard:
+        data["reply_markup"] = {
+            "keyboard": keyboard,
+            "resize_keyboard": True,
+        }
 
-# =========================
+    try:
+        response = requests.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json=data,
+            timeout=20,
+        )
+
+        print("Telegram:", response.text)
+
+        return response.json()
+
+    except Exception as e:
+        print("send_message xatosi:", e)
+        return None
+
+
+def send_long_message(chat_id, text, keyboard=None):
+    """
+    Telegram xabar uzunligi chegarasidan oshmasligi uchun
+    uzun AI javoblarini bo'lib yuboradi.
+    """
+
+    max_length = 3800
+
+    if len(text) <= max_length:
+        return send_message(chat_id, text, keyboard)
+
+    parts = []
+
+    while len(text) > max_length:
+        split_at = text.rfind("\n", 0, max_length)
+
+        if split_at < 1000:
+            split_at = max_length
+
+        parts.append(text[:split_at])
+        text = text[split_at:].lstrip()
+
+    if text:
+        parts.append(text)
+
+    for index, part in enumerate(parts):
+        if index == len(parts) - 1:
+            send_message(chat_id, part, keyboard)
+        else:
+            send_message(chat_id, part)
+
+    return None
+
+
+def answer_callback(callback_query_id, text=""):
+    try:
+        requests.post(
+            f"{TELEGRAM_API}/answerCallbackQuery",
+            json={
+                "callback_query_id": callback_query_id,
+                "text": text,
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        print("callback xatosi:", e)
+
+
+# =========================================================
+# KLAVIATURALAR
+# =========================================================
+
+def main_keyboard():
+    return [
+        ["🛒 Mahsulot muammosi"],
+        ["💰 Pulni qaytarish", "🛠 Kafolat"],
+        ["📎 Kerakli hujjatlar", "⚖️ Huquqlarim"],
+        ["📞 Aloqa"],
+        ["💼 Qo‘shimcha xizmatlar"],
+    ]
+
+
+def yes_no_keyboard():
+    return [
+        ["✅ Ha", "❌ Yo‘q"],
+        ["⬅️ Orqaga"],
+    ]
+
+
+def back_keyboard():
+    return [
+        ["⬅️ Orqaga"],
+        ["🏠 Bosh menyu"],
+    ]
+
+
+def skip_keyboard():
+    return [
+        ["⏭ O‘tkazib yuborish"],
+        ["⬅️ Orqaga"],
+    ]
+
+
+def evidence_keyboard():
+    return [
+        ["⏭ O‘tkazib yuborish"],
+        ["⬅️ Orqaga"],
+    ]
+
+
+def paid_keyboard():
+    return [
+        ["📝 Ariza tayyorlash"],
+        ["📑 Hujjat tahlili"],
+        ["🧭 Individual yo‘l xaritasi"],
+        ["📄 Shartnoma tekshiruvi"],
+        ["📂 Murojaat paketi"],
+        ["👨‍💼 Mutaxassis bilan aloqa"],
+        ["⬅️ Orqaga"],
+    ]
+
+
+# =========================================================
 # START
-# =========================
+# =========================================================
 
 def start_bot(chat_id):
     reset_user(chat_id)
 
     text = (
         "👋 Assalomu alaykum!\n\n"
-        "🛡 Mening Huquqim botiga xush kelibsiz.\n\n"
-        "Bu bot iste’molchilarga muammo bo‘yicha "
-        "dastlabki amaliy huquqiy yo‘l-yo‘riq beradi.\n\n"
-        "Muammoingizni bosqichma-bosqich aniqlaymiz "
-        "va keyingi qonuniy qadamlarni tushuntiramiz.\n\n"
-        "Quyidagi bo‘limlardan birini tanlang:"
+        "Siz «Mening Huquqim» botidasiz.\n\n"
+        "Bu bot iste’molchi muammosini tushunish, "
+        "zarur ma’lumot va dalillarni yig‘ish hamda "
+        "dastlabki huquqiy yo‘l-yo‘riq berishga yordam beradi.\n\n"
+        "⚠️ Bot yakuniy sud yoki ekspert xulosasini bermaydi. "
+        "AI tahlili taqdim etilgan ma’lumotlarga asoslangan "
+        "dastlabki yo‘l-yo‘riq hisoblanadi.\n\n"
+        "Kerakli bo‘limni tanlang:"
     )
 
     send_message(chat_id, text, main_keyboard())
 
 
-# =========================
+# =========================================================
 # MAHSULOT MUAMMOSI
-# =========================
+# =========================================================
 
-def start_product_problem(chat_id):
-    data = get_user(chat_id)
+def start_product_case(chat_id):
+    user = reset_user(chat_id)
 
-    data["section"] = "product"
-    data["step"] = "product"
+    user["step"] = "product"
 
     send_message(
         chat_id,
         "🛒 Mahsulot muammosi\n\n"
-        "1-savol.\n"
-        "Qanday mahsulot sotib oldingiz?",
-        back_keyboard()
+        "Avvalo, qanday mahsulot sotib olganingizni yozing.\n\n"
+        "Masalan: muzlatkich, televizor, telefon, "
+        "kir yuvish mashinasi va hokazo.",
+        back_keyboard(),
     )
 
+
+def show_product_step(chat_id):
+    user = get_user(chat_id)
+    step = user["step"]
+
+    if step == "product":
+        send_message(
+            chat_id,
+            "🛒 Qanday mahsulot sotib oldingiz?",
+            back_keyboard(),
+        )
+
+    elif step == "purchase_date":
+        send_message(
+            chat_id,
+            "📅 Mahsulotni qachon sotib oldingiz?",
+            back_keyboard(),
+        )
+
+    elif step == "problem":
+        send_message(
+            chat_id,
+            "⚠️ Mahsulotda qanday muammo yoki nuqson yuzaga keldi?",
+            back_keyboard(),
+        )
+
+    elif step == "seller_contacted":
+        send_message(
+            chat_id,
+            "🏪 Savdo tashkiloti yoki sotuvchiga murojaat qildingizmi?",
+            yes_no_keyboard(),
+        )
+
+    elif step == "seller_response":
+        send_message(
+            chat_id,
+            "🏪 Sotuvchi sizga qanday javob berdi?\n\n"
+            "Javobni imkon qadar batafsil yozing.",
+            back_keyboard(),
+        )
+
+    elif step == "service_contacted":
+        send_message(
+            chat_id,
+            "🔧 Ishlab chiqaruvchi yoki servis xizmatiga "
+            "murojaat qildingizmi?",
+            yes_no_keyboard(),
+        )
+
+    elif step == "service_response":
+        send_message(
+            chat_id,
+            "🔧 Servis yoki ishlab chiqaruvchi qanday "
+            "xulosa/javob berdi?",
+            back_keyboard(),
+        )
+
+    elif step == "receipt":
+        send_message(
+            chat_id,
+            "🧾 Kassa yoki tovar cheki mavjudmi?\n\n"
+            "Agar boshqa xaridni tasdiqlovchi dalil bo‘lsa, "
+            "keyinchalik uni ham ko‘rsatishingiz mumkin.",
+            yes_no_keyboard(),
+        )
+
+    elif step == "warranty":
+        send_message(
+            chat_id,
+            "🛠 Kafolat taloni yoki kafolat muddati "
+            "ko‘rsatilgan texnik hujjat mavjudmi?",
+            yes_no_keyboard(),
+        )
+
+    elif step == "installment":
+        send_message(
+            chat_id,
+            "💳 Mahsulot muddatli to‘lov yoki kredit "
+            "asosida sotib olinganmi?",
+            yes_no_keyboard(),
+        )
+
+    elif step == "contract":
+        send_message(
+            chat_id,
+            "📄 Agar muddatli to‘lov yoki kredit bo‘lsa, "
+            "shartnoma nusxasini yuborishingiz mumkin.\n\n"
+            "Mavjud bo‘lmasa, «O‘tkazib yuborish»ni bosing.",
+            skip_keyboard(),
+        )
+
+    elif step == "evidence":
+        send_message(
+            chat_id,
+            "📎 Qo‘shimcha dalillarni yuborishingiz mumkin.\n\n"
+            "Masalan:\n"
+            "• chek\n"
+            "• kafolat taloni\n"
+            "• servis xulosasi\n"
+            "• sotuvchi javobi\n"
+            "• foto/video\n"
+            "• boshqa tegishli hujjatlar\n\n"
+            "Mavjud bo‘lmasa, «O‘tkazib yuborish»ni bosing.",
+            evidence_keyboard(),
+        )
+
+
+# =========================================================
+# ORQAGA
+# =========================================================
+
+def go_back(chat_id):
+    user = get_user(chat_id)
+    step = user["step"]
+
+    previous = {
+        "product": "main",
+
+        "purchase_date": "product",
+        "problem": "purchase_date",
+
+        "seller_contacted": "problem",
+        "seller_response": "seller_contacted",
+
+        "service_contacted": "seller_response",
+        "service_response": "service_contacted",
+
+        "receipt": "service_response",
+        "warranty": "receipt",
+
+        "installment": "warranty",
+        "contract": "installment",
+
+        "evidence": "contract",
+    }
+
+    if step not in previous:
+        send_message(chat_id, "Bosh menyuga qaytdingiz.", main_keyboard())
+        user["step"] = "main"
+        return
+
+    previous_step = previous[step]
+
+    if previous_step == "main":
+        user["step"] = "main"
+        send_message(chat_id, "🏠 Bosh menyu", main_keyboard())
+        return
+
+    user["step"] = previous_step
+    show_product_step(chat_id)
+
+
+# =========================================================
+# SAVOL JAVOBLARI
+# =========================================================
 
 def product_question(chat_id, text):
-    data = get_user(chat_id)
-    step = data.get("step")
+    user = get_user(chat_id)
+    step = user["step"]
 
-    # 1. Mahsulot
+    # -----------------------------------------
+    # MAHSULOT
+    # -----------------------------------------
+
     if step == "product":
-        data["product"] = text
-        data["step"] = "purchase_date"
-
-        send_message(
-            chat_id,
-            "📅 2-savol.\n"
-            "Mahsulotni qachon sotib oldingiz?\n\n"
-            "Masalan: 15.05.2026",
-            back_keyboard()
-        )
+        user["product"] = text.strip()
+        user["step"] = "purchase_date"
+        show_product_step(chat_id)
         return
 
-    # 2. Xarid sanasi
+    # -----------------------------------------
+    # SANA
+    # -----------------------------------------
+
     if step == "purchase_date":
-        data["purchase_date"] = text
-        data["step"] = "problem"
-
-        send_message(
-            chat_id,
-            "📝 3-savol.\n"
-            "Mahsulotda qanday muammo yoki nuqson yuzaga keldi?",
-            back_keyboard()
-        )
+        user["purchase_date"] = text.strip()
+        user["step"] = "problem"
+        show_product_step(chat_id)
         return
 
-    # 3. Muammo
+    # -----------------------------------------
+    # MUAMMO
+    # -----------------------------------------
+
     if step == "problem":
-        data["problem"] = text
-        data["step"] = "seller_contacted"
-
-        send_message(
-            chat_id,
-            "🏪 4-savol.\n"
-            "Savdo tashkilotiga yoki sotuvchiga murojaat qildingizmi?",
-            yes_no_keyboard()
-        )
+        user["problem"] = text.strip()
+        user["step"] = "seller_contacted"
+        show_product_step(chat_id)
         return
 
-    # 4. Sotuvchiga murojaat
+    # -----------------------------------------
+    # SOTUVCHIGA MUROJAAT
+    # -----------------------------------------
+
     if step == "seller_contacted":
-        if text == "✅ Ha":
-            data["seller_contacted"] = "ha"
-            data["step"] = "seller_response"
 
-            send_message(
-                chat_id,
-                "🏪 Sotuvchi nima javob berdi?\n\n"
-                "Javobini imkon qadar batafsil yozing.",
-                back_keyboard()
-            )
+        if text == "✅ Ha":
+            user["seller_contacted"] = "Ha"
+            user["step"] = "seller_response"
+            show_product_step(chat_id)
             return
 
         if text == "❌ Yo‘q":
-            data["seller_contacted"] = "yo‘q"
-            data["step"] = "service_contacted"
-
-            send_message(
-                chat_id,
-                "🔧 5-savol.\n"
-                "Ishlab chiqaruvchi yoki uning servis xizmatiga "
-                "murojaat qildingizmi?",
-                yes_no_keyboard()
-            )
+            user["seller_contacted"] = "Yo‘q"
+            user["seller_response"] = ""
+            user["step"] = "service_contacted"
+            show_product_step(chat_id)
             return
 
         send_message(
             chat_id,
-            "Iltimos, quyidagi tugmalardan birini tanlang.",
-            yes_no_keyboard()
+            "Iltimos, «Ha» yoki «Yo‘q» tugmasini tanlang.",
+            yes_no_keyboard(),
         )
         return
 
-    # 5. Sotuvchi javobi
+    # -----------------------------------------
+    # SOTUVCHI JAVOBI
+    # -----------------------------------------
+
     if step == "seller_response":
-        data["seller_response"] = text
-        data["step"] = "service_contacted"
-
-        send_message(
-            chat_id,
-            "🔧 5-savol.\n"
-            "Ishlab chiqaruvchi yoki uning servis xizmatiga "
-            "murojaat qildingizmi?",
-            yes_no_keyboard()
-        )
+        user["seller_response"] = text.strip()
+        user["step"] = "service_contacted"
+        show_product_step(chat_id)
         return
 
-    # 6. Servisga murojaat
+    # -----------------------------------------
+    # SERVISGA MUROJAAT
+    # -----------------------------------------
+
     if step == "service_contacted":
-        if text == "✅ Ha":
-            data["service_contacted"] = "ha"
-            data["step"] = "service_response"
 
-            send_message(
-                chat_id,
-                "🔧 Servis qanday xulosa yoki javob berdi?\n\n"
-                "Agar yozma xulosa bo‘lsa, mazmunini yozing.",
-                back_keyboard()
-            )
+        if text == "✅ Ha":
+            user["service_contacted"] = "Ha"
+            user["step"] = "service_response"
+            show_product_step(chat_id)
             return
 
         if text == "❌ Yo‘q":
-            data["service_contacted"] = "yo‘q"
-            data["step"] = "receipt"
-
-            send_message(
-                chat_id,
-                "🧾 6-savol.\n"
-                "Kassa yoki tovar cheki mavjudmi?",
-                yes_no_keyboard()
-            )
+            user["service_contacted"] = "Yo‘q"
+            user["service_response"] = ""
+            user["step"] = "receipt"
+            show_product_step(chat_id)
             return
 
         send_message(
             chat_id,
-            "Iltimos, quyidagi tugmalardan birini tanlang.",
-            yes_no_keyboard()
+            "Iltimos, «Ha» yoki «Yo‘q» tugmasini tanlang.",
+            yes_no_keyboard(),
         )
         return
 
-    # 7. Servis javobi
+    # -----------------------------------------
+    # SERVIS JAVOBI
+    # -----------------------------------------
+
     if step == "service_response":
-        data["service_response"] = text
-        data["step"] = "receipt"
-
-        send_message(
-            chat_id,
-            "🧾 6-savol.\n"
-            "Kassa yoki tovar cheki mavjudmi?",
-            yes_no_keyboard()
-        )
+        user["service_response"] = text.strip()
+        user["step"] = "receipt"
+        show_product_step(chat_id)
         return
 
-    # 8. Chek
+    # -----------------------------------------
+    # CHEK
+    # -----------------------------------------
+
     if step == "receipt":
+
         if text == "✅ Ha":
-            data["receipt"] = "mavjud"
-        elif text == "❌ Yo‘q":
-            data["receipt"] = "mavjud emas"
-        else:
-            send_message(
-                chat_id,
-                "Iltimos, tugmalardan birini tanlang.",
-                yes_no_keyboard()
-            )
-            return
-
-        data["step"] = "warranty"
-
-        send_message(
-            chat_id,
-            "🛡 7-savol.\n"
-            "Kafolat taloni yoki kafolat muddati ko‘rsatilgan "
-            "texnik hujjat mavjudmi?",
-            yes_no_keyboard()
-        )
-        return
-
-    # 9. Kafolat
-    if step == "warranty":
-        if text == "✅ Ha":
-            data["warranty"] = "mavjud"
-        elif text == "❌ Yo‘q":
-            data["warranty"] = "mavjud emas"
-        else:
-            send_message(
-                chat_id,
-                "Iltimos, tugmalardan birini tanlang.",
-                yes_no_keyboard()
-            )
-            return
-
-        data["step"] = "installment"
-
-        send_message(
-            chat_id,
-            "💳 8-savol.\n"
-            "Mahsulotni muddatli to‘lov yoki kredit asosida oldingizmi?",
-            yes_no_keyboard()
-        )
-        return
-
-    # 10. Kredit / muddatli to‘lov
-    if step == "installment":
-        if text == "✅ Ha":
-            data["installment"] = "ha"
-            data["step"] = "contract"
-
-            send_message(
-                chat_id,
-                "📄 Muddatli to‘lov yoki kredit shartnomasi "
-                "mavjud bo‘lsa, uni yuboring.\n\n"
-                "Yuborish imkoniyati bo‘lmasa, "
-                "⏭ O‘tkazib yuborish tugmasini bosing.",
-                skip_keyboard()
-            )
+            user["receipt"] = "Ha"
+            user["step"] = "warranty"
+            show_product_step(chat_id)
             return
 
         if text == "❌ Yo‘q":
-            data["installment"] = "yo‘q"
-            data["step"] = "evidence"
-
-            send_message(
-                chat_id,
-                "📎 Qo‘shimcha dalillar mavjud bo‘lsa, "
-                "ular haqida yozing yoki fayl/foto yuboring.\n\n"
-                "Masalan: sotuvchi bilan yozishma, "
-                "mahsulot fotosi, video yoki boshqa hujjat.",
-                skip_keyboard()
-            )
+            user["receipt"] = "Yo‘q"
+            user["step"] = "warranty"
+            show_product_step(chat_id)
             return
 
         send_message(
             chat_id,
-            "Iltimos, tugmalardan birini tanlang.",
-            yes_no_keyboard()
+            "Iltimos, «Ha» yoki «Yo‘q» tugmasini tanlang.",
+            yes_no_keyboard(),
         )
         return
 
-    # 11. Shartnoma
+    # -----------------------------------------
+    # KAFOLAT
+    # -----------------------------------------
+
+    if step == "warranty":
+
+        if text == "✅ Ha":
+            user["warranty"] = "Ha"
+            user["step"] = "installment"
+            show_product_step(chat_id)
+            return
+
+        if text == "❌ Yo‘q":
+            user["warranty"] = "Yo‘q"
+            user["step"] = "installment"
+            show_product_step(chat_id)
+            return
+
+        send_message(
+            chat_id,
+            "Iltimos, «Ha» yoki «Yo‘q» tugmasini tanlang.",
+            yes_no_keyboard(),
+        )
+        return
+
+    # -----------------------------------------
+    # MUDDATLI TO‘LOV
+    # -----------------------------------------
+
+    if step == "installment":
+
+        if text == "✅ Ha":
+            user["installment"] = "Ha"
+            user["step"] = "contract"
+            show_product_step(chat_id)
+            return
+
+        if text == "❌ Yo‘q":
+            user["installment"] = "Yo‘q"
+            user["step"] = "evidence"
+            show_product_step(chat_id)
+            return
+
+        send_message(
+            chat_id,
+            "Iltimos, «Ha» yoki «Yo‘q» tugmasini tanlang.",
+            yes_no_keyboard(),
+        )
+        return
+
+    # -----------------------------------------
+    # SHARTNOMA
+    # -----------------------------------------
+
     if step == "contract":
-        if text in ["⏭ O‘tkazib yuborish", "O‘tkazib yuborish"]:
-            data["contract"] = "yuborilmadi"
-        else:
-            data["contract"] = "matn ko‘rinishida qabul qilindi"
 
-        data["step"] = "evidence"
+        if text == "⏭ O‘tkazib yuborish":
+            user["step"] = "evidence"
+            show_product_step(chat_id)
+            return
 
-        send_message(
-            chat_id,
-            "📎 Qo‘shimcha dalillar mavjud bo‘lsa, "
-            "ular haqida yozing yoki fayl/foto yuboring.\n\n"
-            "Masalan: sotuvchi bilan yozishma, "
-            "mahsulot fotosi, video yoki boshqa hujjat.",
-            skip_keyboard()
-        )
+        user["step"] = "evidence"
+        show_product_step(chat_id)
         return
 
-    # 12. Dalillar
+    # -----------------------------------------
+    # DALILLAR
+    # -----------------------------------------
+
     if step == "evidence":
-        if text in ["⏭ O‘tkazib yuborish", "O‘tkazib yuborish"]:
-            data["evidence"] = ""
-        else:
-            data["evidence"] = text
 
-        data["step"] = "finish"
+        if text == "⏭ O‘tkazib yuborish":
+            finish_case(chat_id)
+            return
 
-        send_message(
-            chat_id,
-            "Ma’lumotlar qabul qilindi. ✅\n\n"
-            "Endi dastlabki yo‘l-yo‘riqni tayyorlash uchun "
-            "🏁 Yakunlash tugmasini bosing.",
-            finish_keyboard()
-        )
+        user["evidence_files"].append({
+            "type": "text",
+            "value": text[:1000],
+        })
+
+        finish_case(chat_id)
         return
 
 
-# =========================
-# YAKUNIY TAHLIL
-# =========================
+# =========================================================
+# AI TAHLILI
+# =========================================================
 
-def finish_case(chat_id):
-    data = get_user(chat_id)
+AI_INSTRUCTIONS = """
+Siz “Mening Huquqim” nomli iste’molchilar uchun amaliy
+huquqiy yo‘l-yo‘riq beruvchi AI yordamchisiz.
 
-    files_count = len(data.get("evidence_files", []))
+Siz O‘zbekiston Respublikasidagi iste’molchi huquqlari
+bilan bog‘liq vaziyatlarni dastlabki tahlil qilasiz.
+
+ASOSIY QOIDALAR:
+
+1. Faqat foydalanuvchi taqdim etgan faktlarga tayaning.
+
+2. Faktlar yetarli bo‘lmasa, ularni o‘ylab topmang.
+
+3. “Iste’molchi albatta haq”, “sotuvchi aniq qonunni buzgan”
+   kabi qat’iy xulosalarni dalilsiz bermang.
+
+4. Tahlilni “taqdim etilgan ma’lumotlarga ko‘ra”,
+   “dastlabki baholash sifatida” kabi ehtiyotkor shaklda bering.
+
+5. Sizga amaldagi normativ-huquqiy hujjatlarning to‘liq
+   matni berilmagan bo‘lsa, aniq modda yoki band raqamini
+   taxmin qilmang.
+
+6. Aniq modda/band raqami bo‘yicha ishonch bo‘lmasa:
+   “amaldagi LexUZ matni bilan tekshirish zarur”
+   deb ko‘rsating.
+
+7. Iste’molchilarning huquqlarini himoya qilish to‘g‘risidagi
+   qonunchilik va chakana savdo qoidalari doirasida
+   fikr yuriting.
+
+8. Qo‘mita vakolatiga masalani avtomatik ravishda kiritmang.
+   Masalan, sud, ekspertiza, jinoyat alomatlari, ayrim
+   maxsus tartibga solinadigan sohalar yoki boshqa organning
+   vakolatiga oid masalalar bo‘lishi mumkin.
+
+9. Vakolat bo‘yicha:
+   - “Qo‘mita vakolatiga kirishi mumkin”
+   - “Qo‘mita vakolatiga kirmasligi mumkin”
+   - “qo‘shimcha ma’lumot kerak”
+   kabi ehtiyotkor iboralardan foydalaning.
+
+10. Foydalanuvchiga amaliy keyingi qadamlarni aniq yozing.
+
+11. Hujjatlar bo‘yicha “mavjud bo‘lsa” tamoyilini saqlang.
+    Hujjat mavjud emasligini avtomatik ravishda huquq yo‘qolishi
+    deb talqin qilmang.
+
+12. Sudga murojaat qilish zarur bo‘lishi mumkin bo‘lgan
+    holatlarda buni tushuntiring, lekin sud natijasini
+    oldindan va’da qilmang.
+
+JAVOB FORMATI:
+
+🔎 VAZIYAT XULOSASI
+
+⚖️ DASTLABKI HUQUQIY BAHO
+
+📎 MUHIM DALILLAR
+
+🏛 VAKOLAT MASALASI
+
+➡️ KEYINGI AMALIY QADAM
+
+⚠️ MUHIM ESLATMA
+
+Javob tushunarli, qisqa, amaliy va o‘zbek tilida bo‘lsin.
+Keraksiz murakkab yuridik iboralardan foydalanmang.
+"""
+
+
+def build_case_prompt(user):
+    evidence_count = len(user.get("evidence_files", []))
+
+    contract_exists = (
+        "Ha"
+        if user.get("contract_file_id")
+        else "Yo‘q"
+    )
+
+    prompt = f"""
+Quyidagi iste’molchi murojaatini dastlabki tahlil qiling.
+
+MAHSULOT:
+{user.get("product") or "Ko‘rsatilmagan"}
+
+SOTIB OLINGAN SANA:
+{user.get("purchase_date") or "Ko‘rsatilmagan"}
+
+MUAMMO / NUQSON:
+{user.get("problem") or "Ko‘rsatilmagan"}
+
+SOTUVCHIGA MUROJAAT:
+{user.get("seller_contacted") or "Ko‘rsatilmagan"}
+
+SOTUVCHI JAVOBI:
+{user.get("seller_response") or "Murojaat qilinmagan yoki javob ko‘rsatilmagan"}
+
+SERVIS / ISHLAB CHIQARUVCHIGA MUROJAAT:
+{user.get("service_contacted") or "Ko‘rsatilmagan"}
+
+SERVIS JAVOBI:
+{user.get("service_response") or "Murojaat qilinmagan yoki javob ko‘rsatilmagan"}
+
+CHEK:
+{user.get("receipt") or "Ko‘rsatilmagan"}
+
+KAFOLAT:
+{user.get("warranty") or "Ko‘rsatilmagan"}
+
+MUDDATLI TO‘LOV / KREDIT:
+{user.get("installment") or "Ko‘rsatilmagan"}
+
+SHARTNOMA FAYLI:
+{contract_exists}
+
+QO‘SHIMCHA DALILLAR SONI:
+{evidence_count}
+
+MUHIM:
+Yuklangan fayllarning mazmuni hozircha AIga uzatilmagan.
+Shuning uchun faqat ularning mavjudligi haqida xulosa qiling,
+fayl ichidagi ma’lumotlarni o‘ylab topmang.
+
+Yuqoridagi faktlarga asoslanib dastlabki huquqiy
+yo‘l-yo‘riq bering.
+"""
+
+    return prompt
+
+
+def analyze_case_with_ai(user):
+    if not openai_client:
+        return None
+
+    prompt = build_case_prompt(user)
+
+    try:
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=AI_INSTRUCTIONS,
+            input=prompt,
+        )
+
+        result = getattr(response, "output_text", None)
+
+        if result:
+            return result.strip()
+
+        return None
+
+    except Exception as e:
+        print("OpenAI API xatosi:", repr(e))
+        return None
+
+
+# =========================================================
+# CASE YAKUNI
+# =========================================================
+
+def fallback_case_analysis(user):
+    evidence_count = len(user.get("evidence_files", []))
 
     text = (
-        "🔎 MUROJAAT BO‘YICHA DASTLABKI YO‘L-YO‘RIQ\n\n"
-        f"🛒 Mahsulot: {data.get('product') or 'ko‘rsatilmagan'}\n"
-        f"📅 Xarid sanasi: {data.get('purchase_date') or 'ko‘rsatilmagan'}\n\n"
-        f"📝 Muammo: {data.get('problem') or 'ko‘rsatilmagan'}\n\n"
-        "🏪 SOTUVCHI BILAN MULOQOT\n\n"
-    )
-
-    if data.get("seller_contacted") == "ha":
-        text += (
-            "Siz sotuvchiga murojaat qilganingizni ko‘rsatdingiz.\n\n"
-            f"Javob: {data.get('seller_response') or 'ko‘rsatilmagan'}\n\n"
-        )
-    else:
-        text += "Siz sotuvchiga murojaat qilmaganingizni ko‘rsatdingiz.\n\n"
-
-    text += "🔧 SERVIS\n\n"
-
-    if data.get("service_contacted") == "ha":
-        text += (
-            "Siz ishlab chiqaruvchi yoki servis xizmatiga "
-            "murojaat qilganingizni ko‘rsatdingiz.\n\n"
-            f"Servis javobi: "
-            f"{data.get('service_response') or 'ko‘rsatilmagan'}\n\n"
-        )
-    else:
-        text += (
-            "Siz ishlab chiqaruvchi yoki servis xizmatiga "
-            "murojaat qilmaganingizni ko‘rsatdingiz.\n\n"
-            "Agar mahsulot nuqsonining sababi yoki texnik holatini "
-            "aniqlash zarur bo‘lsa, servis ko‘rigi yoki yozma xulosa "
-            "foydali dalil bo‘lishi mumkin.\n\n"
-        )
-
-    text += (
-        "📎 HUJJATLAR VA DALILLAR\n\n"
-        f"🧾 Chek: {data.get('receipt') or 'ko‘rsatilmagan'}\n"
-        f"🛡 Kafolat hujjati: {data.get('warranty') or 'ko‘rsatilmagan'}\n"
+        "📋 MUROJAAT BO‘YICHA DASTLABKI MA’LUMOT\n\n"
+        f"🛒 Mahsulot: {user.get('product') or 'ko‘rsatilmagan'}\n"
+        f"📅 Xarid sanasi: {user.get('purchase_date') or 'ko‘rsatilmagan'}\n"
+        f"⚠️ Muammo: {user.get('problem') or 'ko‘rsatilmagan'}\n\n"
+        f"🏪 Sotuvchiga murojaat: "
+        f"{user.get('seller_contacted') or 'ko‘rsatilmagan'}\n"
+        f"🔧 Servisga murojaat: "
+        f"{user.get('service_contacted') or 'ko‘rsatilmagan'}\n"
+        f"🧾 Chek: {user.get('receipt') or 'ko‘rsatilmagan'}\n"
+        f"🛠 Kafolat: {user.get('warranty') or 'ko‘rsatilmagan'}\n"
         f"💳 Muddatli to‘lov/kredit: "
-        f"{data.get('installment') or 'ko‘rsatilmagan'}\n"
-        f"📄 Shartnoma: {data.get('contract') or 'yuborilmagan'}\n"
-        f"📸 Yuklangan fayl/foto/video: {files_count} ta\n"
-        f"📝 Qo‘shimcha yozma ma’lumot: "
-        f"{1 if data.get('evidence') else 0} ta\n\n"
+        f"{user.get('installment') or 'ko‘rsatilmagan'}\n"
+        f"📎 Qo‘shimcha dalillar: {evidence_count} ta\n\n"
+        "➡️ Keyingi bosqichda taqdim etilgan hujjatlar va "
+        "dalillarni batafsil tekshirish hamda amaldagi "
+        "qonunchilik bilan solishtirish tavsiya etiladi."
     )
 
-    text += (
-        "📌 KEYINGI QADAM\n\n"
-        "1. Sotuvchining javobi va yozishmalarini saqlang.\n"
-        "2. Mavjud chek, kafolat hujjati va boshqa dalillarni "
-        "bir joyga jamlang.\n"
-        "3. Mahsulot nuqsonining sababi bo‘yicha texnik masala "
-        "mavjud bo‘lsa, servis ko‘rigi yoki xulosasini olishni ko‘rib chiqing.\n"
-        "4. Muammoning mazmuniga qarab sotuvchiga qonuniy talab "
-        "qo‘yish yoki tegishli vakolatli organga murojaat qilish "
-        "masalasi ko‘rib chiqiladi.\n\n"
-        "⚖️ MUHIM\n\n"
-        "Ushbu bot dastlabki amaliy yo‘l-yo‘riq beradi. "
-        "Bot avtomatik ravishda iste’molchini yoki sotuvchini "
-        "aybdor deb e’lon qilmaydi.\n\n"
-        "Yakuniy baho hujjatlar, shartnoma, mahsulot holati, "
-        "servis yoki ekspertiza xulosasi va boshqa dalillarga "
-        "bog‘liq bo‘lishi mumkin.\n\n"
-        "Agar masala boshqa maxsus vakolatli davlat organi yoki "
-        "sud vakolatiga kirsa, tegishli tartibda o‘sha organga "
-        "yoki sudga murojaat qilish masalasi ko‘rib chiqiladi."
+    return text
+
+
+def finish_case(chat_id):
+    user = get_user(chat_id)
+
+    user["step"] = "finish"
+    user["case_finished"] = True
+
+    send_message(
+        chat_id,
+        "🔎 Ma’lumotlaringiz qabul qilindi.\n\n"
+        "🤖 Endi vaziyat bo‘yicha dastlabki AI tahlil "
+        "tayyorlanmoqda..."
     )
 
-    send_message(chat_id, text, main_keyboard())
+    ai_result = analyze_case_with_ai(user)
 
-    data["section"] = None
-    data["step"] = None
+    if ai_result:
+        final_text = (
+            "🤖 Mening Huquqim — dastlabki AI tahlili\n\n"
+            + ai_result
+            + "\n\n"
+            "⚠️ Ushbu tahlil taqdim etilgan ma’lumotlarga "
+            "asoslangan dastlabki yo‘l-yo‘riqdir. "
+            "Yakuniy huquqiy xulosa hujjatlar, ekspertiza "
+            "va amaldagi qonunchilikni to‘liq tekshirishni "
+            "talab qilishi mumkin."
+        )
+    else:
+        final_text = (
+            fallback_case_analysis(user)
+            + "\n\n"
+            "⚠️ AI tahlili hozircha ishga tushmadi. "
+            "Ma’lumotlaringiz saqlandi. Keyinchalik "
+            "batafsil tahlil qilish mumkin."
+        )
+
+    send_long_message(
+        chat_id,
+        final_text,
+        main_keyboard(),
+    )
 
 
-# =========================
-# STATIK BO‘LIMLAR
-# =========================
+# =========================================================
+# HUQUQLAR
+# =========================================================
+
+def show_rights(chat_id):
+    text = (
+        "⚖️ HUQUQLARINGIZ\n\n"
+        "Iste’molchi sifatida mahsulot yoki xizmatdan "
+        "foydalanishda qonunchilikda belgilangan "
+        "huquqlaringiz mavjud.\n\n"
+        "Jumladan, muammo yuzaga kelganda:\n"
+        "• sotuvchiga murojaat qilish;\n"
+        "• mavjud hujjat va dalillarni taqdim etish;\n"
+        "• mahsulotning kafolat va sifat masalalari bo‘yicha "
+        "talab qo‘yish;\n"
+        "• zarur hollarda vakolatli organlarga yoki sudga "
+        "murojaat qilish mumkin.\n\n"
+        "⚠️ Har bir holat alohida baholanadi. "
+        "Aniq huquq va talablar mahsulot turi, xarid shartlari, "
+        "kafolat, nuqson va mavjud dalillarga bog‘liq."
+    )
+
+    send_message(chat_id, text, back_keyboard())
+
+
+# =========================================================
+# HUJJATLAR
+# =========================================================
 
 def show_documents(chat_id):
     text = (
         "📎 KERAKLI HUJJATLAR\n\n"
-        "Muammoingizga qarab quyidagi hujjatlar foydali bo‘lishi mumkin:\n\n"
+        "Muammoga qarab quyidagi hujjatlar foydali bo‘lishi mumkin:\n\n"
         "🧾 Kassa yoki tovar cheki — mavjud bo‘lsa\n"
-        "🛡 Kafolat taloni — mavjud bo‘lsa\n"
-        "📄 Texnik hujjatlar — mavjud bo‘lsa\n"
-        "💳 Kredit yoki muddatli to‘lov shartnomasi — tegishli bo‘lsa\n"
-        "📸 Mahsulotning foto/video dalillari\n"
-        "📝 Sotuvchi bilan yozishmalar yoki javob\n"
-        "🔧 Servis xulosasi — mavjud bo‘lsa\n\n"
-        "Chek mavjud bo‘lmasa ham, xaridni tasdiqlovchi "
-        "boshqa dalillar muhim bo‘lishi mumkin."
+        "🛠 Kafolat taloni — mavjud bo‘lsa\n"
+        "📄 Shartnoma — kredit/muddatli to‘lov bo‘lsa\n"
+        "🔧 Servis xulosasi — mavjud bo‘lsa\n"
+        "🏪 Sotuvchining yozma javobi — mavjud bo‘lsa\n"
+        "📷 Foto/video — nuqsonni tasdiqlasa\n"
+        "📑 Boshqa tegishli hujjatlar\n\n"
+        "Hujjat mavjud emasligi holatning barcha "
+        "huquqiy jihatlari avtomatik ravishda yo‘qoladi "
+        "degan ma’noni anglatmaydi."
     )
 
     send_message(chat_id, text, back_keyboard())
 
 
-def show_rights(chat_id):
-    text = (
-        "⚖️ HUQUQLARIM\n\n"
-        "Iste’molchi sifatida siz mahsulot va xizmatlar haqida "
-        "to‘liq va tushunarli ma’lumot olish, tegishli sifat va "
-        "xavfsizlik talablariga javob beradigan mahsulotni olish, "
-        "qonunchilikda nazarda tutilgan hollarda o‘z huquqlaringizni "
-        "himoya qilishni talab qilish huquqiga egasiz.\n\n"
-        "Aniq huquq va talab mahsulot turi, nuqson, xarid shartlari "
-        "va mavjud dalillarga qarab belgilanadi."
-    )
-
-    send_message(chat_id, text, back_keyboard())
-
+# =========================================================
+# PULNI QAYTARISH
+# =========================================================
 
 def show_refund(chat_id):
     text = (
         "💰 PULNI QAYTARISH\n\n"
-        "Pulni qaytarish masalasi mahsulotning holati, nuqsoni, "
-        "xarid shartlari va qonunchilikdagi tegishli talablarga "
-        "bog‘liq.\n\n"
-        "Aniq holatni tushunish uchun 🛒 Mahsulot muammosi "
-        "bo‘limidan foydalanib, savollarga javob bering."
+        "Pulni qaytarish masalasi mahsulotning holati, "
+        "nuqsoni, xarid sanasi, kafolat shartlari, "
+        "sotuvchi bilan muloqot va boshqa dalillarga bog‘liq.\n\n"
+        "Agar mahsulot bilan muammo yuzaga kelgan bo‘lsa, "
+        "avval «🛒 Mahsulot muammosi» bo‘limida "
+        "holatingizni batafsil kiriting."
     )
 
     send_message(chat_id, text, back_keyboard())
 
+
+# =========================================================
+# KAFOLAT
+# =========================================================
 
 def show_warranty(chat_id):
     text = (
         "🛠 KAFOLAT\n\n"
-        "Kafolat muddati, mahsulotning nuqsoni va servis xulosasi "
-        "masalaning yechimida muhim bo‘lishi mumkin.\n\n"
-        "Agar kafolat hujjati mavjud bo‘lsa, uni saqlang va "
-        "zarur bo‘lsa servis yoki sotuvchiga taqdim eting."
+        "Kafolat masalasi mahsulot turi, kafolat muddati, "
+        "nuqsonning xususiyati va sotib olish shartlariga "
+        "qarab baholanadi.\n\n"
+        "Kafolat taloni yoki texnik hujjatlar mavjud bo‘lsa, "
+        "ularni saqlab qo‘yish tavsiya etiladi.\n\n"
+        "Muammo bo‘lsa, «🛒 Mahsulot muammosi» bo‘limi orqali "
+        "batafsil ma’lumot kiriting."
     )
 
     send_message(chat_id, text, back_keyboard())
 
+
+# =========================================================
+# ALOQA
+# =========================================================
 
 def show_contact(chat_id):
     text = (
         "📞 ALOQA\n\n"
-        "Mening Huquqim\n\n"
-        "📲 Telegram: @Qul_Umidi\n\n"
-        "Savolingiz bo‘lsa, botdagi tegishli bo‘limdan "
-        "foydalanishingiz mumkin."
+        "«Mening Huquqim» loyihasi bo‘yicha aloqa:\n\n"
+        "Telegram: @Qul_Umidi\n\n"
+        "⚠️ «Mening Huquqim» mustaqil axborot yordamchi "
+        "loyihasi bo‘lib, davlat organining rasmiy boti "
+        "sifatida qaralmaydi."
     )
 
     send_message(chat_id, text, back_keyboard())
 
 
-# =========================
-# PULLIK XIZMATLAR
-# =========================
+# =========================================================
+# QO‘SHIMCHA XIZMATLAR
+# =========================================================
 
 def show_paid_services(chat_id):
     text = (
         "💼 QO‘SHIMCHA XIZMATLAR\n\n"
-        "Muammoingiz bo‘yicha qo‘shimcha amaliy yordam "
-        "olishingiz mumkin.\n\n"
+        "Muammo bo‘yicha chuqurroq yordam kerak bo‘lsa, "
+        "quyidagi xizmatlar mavjud:\n\n"
         "📝 Ariza tayyorlash\n"
         "📑 Hujjat tahlili\n"
         "🧭 Individual yo‘l xaritasi\n"
@@ -698,260 +972,414 @@ def show_paid_services(chat_id):
         "Kerakli xizmatni tanlang."
     )
 
-    send_message(chat_id, text, paid_services_keyboard())
+    send_message(chat_id, text, paid_keyboard())
 
 
 def paid_service_info(chat_id, service):
-    services = {
+    descriptions = {
         "📝 Ariza tayyorlash": (
             "📝 ARIZA TAYYORLASH\n\n"
-            "Siz bergan ma’lumotlar va mavjud hujjatlar asosida "
-            "ariza yoki murojaat loyihasini tayyorlash bo‘yicha "
-            "yordam.\n\n"
-            "Xizmat tarkibi:\n"
-            "• muammoni tartibga solish\n"
-            "• talablarni shakllantirish\n"
-            "• murojaat loyihasini tayyorlash\n\n"
-            "💳 Narxi: keyin belgilanadi.\n\n"
-            "Buyurtma berish uchun mutaxassis bilan bog‘lanish "
-            "bo‘limidan foydalaning."
+            "Siz taqdim etgan ma’lumotlar asosida "
+            "murojaat/ariza loyihasini tayyorlashga yordam beriladi."
         ),
 
         "📑 Hujjat tahlili": (
             "📑 HUJJAT TAHLILI\n\n"
-            "Shartnoma, chek, kafolat hujjati, servis xulosasi "
-            "yoki boshqa hujjatlarni ko‘rib chiqish bo‘yicha "
-            "amaliy yordam."
+            "Shartnoma, javob xati yoki boshqa hujjatni "
+            "mazmunan tahlil qilish va muhim jihatlarni "
+            "ajratishga yordam beriladi."
         ),
 
         "🧭 Individual yo‘l xaritasi": (
             "🧭 INDIVIDUAL YO‘L XARITASI\n\n"
-            "Muammoingiz bo‘yicha qaysi tashkilotga, qanday "
-            "tartibda va qanday hujjatlar bilan murojaat qilish "
-            "kerakligini bosqichma-bosqich shakllantirish."
+            "Muammo bo‘yicha qaysi bosqichda kimga, "
+            "qanday hujjatlar bilan va qanday tartibda "
+            "murojaat qilish mumkinligini tizimlashtirish."
         ),
 
         "📄 Shartnoma tekshiruvi": (
             "📄 SHARTNOMA TEKSHIRUVI\n\n"
-            "Shartnomadagi muhim shartlar, to‘lovlar, majburiyatlar, "
-            "jarimalar, kafolat va boshqa bandlarni tushuntirish "
-            "bo‘yicha yordam."
+            "Shartnomadagi muhim shartlar, majburiyatlar, "
+            "xavfli yoki e’tibor talab qiladigan bandlarni "
+            "aniqlashga yordam beriladi."
         ),
 
         "📂 Murojaat paketi": (
             "📂 MUROJAAT PAKETI\n\n"
-            "Muammo, mavjud hujjatlar va dalillarni tartibga solish "
-            "hamda tegishli murojaat loyihasini tayyorlash bo‘yicha "
-            "kompleks yordam."
+            "Murojaat uchun zarur ma’lumot va hujjatlarni "
+            "tizimlashtirishga yordam beriladi."
         ),
 
         "👨‍💼 Mutaxassis bilan aloqa": (
             "👨‍💼 MUTAXASSIS BILAN ALOQA\n\n"
-            "Telegram: @Qul_Umidi\n\n"
-            "Murojaat qilganda muammoingizni qisqacha yozing va "
-            "mavjud hujjatlarni tayyorlab qo‘ying."
-        )
+            "Murakkab masalalarda mutaxassis bilan "
+            "bog‘lanish imkoniyati."
+        ),
     }
 
-    send_message(
-        chat_id,
-        services.get(service, "Xizmat topilmadi."),
-        back_keyboard()
+    text = descriptions.get(
+        service,
+        "Xizmat ma’lumoti topilmadi."
     )
 
+    text += (
+        "\n\n📞 Batafsil ma’lumot uchun: @Qul_Umidi"
+    )
 
-# =========================
-# HUJJAT / FOTO QABUL QILISH
-# =========================
+    send_message(chat_id, text, back_keyboard())
+
+
+# =========================================================
+# HUJJAT QABUL QILISH
+# =========================================================
 
 def handle_document(chat_id, document):
-    data = get_user(chat_id)
+    user = get_user(chat_id)
+    step = user["step"]
 
     file_id = document.get("file_id")
 
-    if data.get("section") == "product":
-        data.setdefault("evidence_files", []).append(file_id)
+    if not file_id:
+        return
+
+    # SHARTNOMA BOSQICHI
+    if step == "contract":
+        user["contract_file_id"] = file_id
 
         send_message(
             chat_id,
-            "📎 Fayl qabul qilindi. ✅\n\n"
-            "Yana fayl yuborishingiz mumkin yoki "
-            "⏭ O‘tkazib yuborish tugmasini bosing.",
-            skip_keyboard()
+            "✅ Shartnoma fayli qabul qilindi.\n\n"
+            "Endi qo‘shimcha dalillar bo‘lsa yuborishingiz mumkin.",
+            evidence_keyboard(),
         )
 
+        user["step"] = "evidence"
+        return
+
+    # DALILLAR BOSQICHI
+    if step == "evidence":
+        user["evidence_files"].append({
+            "type": "document",
+            "file_id": file_id,
+            "name": document.get("file_name", ""),
+        })
+
+        send_message(
+            chat_id,
+            "✅ Hujjat qabul qilindi.\n\n"
+            "Yana hujjat/foto yuborishingiz mumkin yoki "
+            "«O‘tkazib yuborish»ni bosing.",
+            evidence_keyboard(),
+        )
+        return
+
+    send_message(
+        chat_id,
+        "📎 Hozircha hujjat yuborish bosqichi emas.\n\n"
+        "Kerakli bosqichga yetganimizda hujjatni qabul qilaman.",
+    )
+
+
+# =========================================================
+# FOTO QABUL QILISH
+# =========================================================
 
 def handle_photo(chat_id, photo):
-    data = get_user(chat_id)
+    user = get_user(chat_id)
 
-    if data.get("section") == "product":
-        file_id = photo[-1].get("file_id")
+    if user["step"] != "evidence":
+        send_message(
+            chat_id,
+            "📷 Foto hozircha kerak emas.\n\n"
+            "Dalillarni yuborish bosqichiga yetganimizda "
+            "foto yuborishingiz mumkin.",
+        )
+        return
 
-        data.setdefault("evidence_files", []).append(file_id)
+    if not photo:
+        return
+
+    largest_photo = photo[-1]
+    file_id = largest_photo.get("file_id")
+
+    if file_id:
+        user["evidence_files"].append({
+            "type": "photo",
+            "file_id": file_id,
+        })
+
+    send_message(
+        chat_id,
+        "✅ Foto qabul qilindi.\n\n"
+        "Yana dalil yuborishingiz mumkin yoki "
+        "«O‘tkazib yuborish»ni bosing.",
+        evidence_keyboard(),
+    )
+
+
+# =========================================================
+# ASOSIY MATN HANDLER
+# =========================================================
+
+def handle_text(chat_id, text):
+    user = get_user(chat_id)
+
+    # -----------------------------------------
+    # COMMANDS
+    # -----------------------------------------
+
+    if text.startswith("/start"):
+        start_bot(chat_id)
+        return
+
+    if text == "/muammo":
+        start_product_case(chat_id)
+        return
+
+    if text == "/ariza":
+        paid_service_info(chat_id, "📝 Ariza tayyorlash")
+        return
+
+    if text == "/hujjatlar":
+        show_documents(chat_id)
+        return
+
+    if text == "/huquqim":
+        show_rights(chat_id)
+        return
+
+    if text == "/aloqa":
+        show_contact(chat_id)
+        return
+
+    # -----------------------------------------
+    # UNIVERSAL ORQAGA
+    # -----------------------------------------
+
+    if text == "⬅️ Orqaga":
+        go_back(chat_id)
+        return
+
+    # -----------------------------------------
+    # BOSH MENYU
+    # -----------------------------------------
+
+    if text == "🏠 Bosh menyu":
+        user["step"] = "main"
+        send_message(chat_id, "🏠 Bosh menyu", main_keyboard())
+        return
+
+    # -----------------------------------------
+    # ASOSIY MENYU
+    # -----------------------------------------
+
+    if text == "🛒 Mahsulot muammosi":
+        start_product_case(chat_id)
+        return
+
+    if text == "💰 Pulni qaytarish":
+        show_refund(chat_id)
+        return
+
+    if text == "🛠 Kafolat":
+        show_warranty(chat_id)
+        return
+
+    if text == "📎 Kerakli hujjatlar":
+        show_documents(chat_id)
+        return
+
+    if text == "⚖️ Huquqlarim":
+        show_rights(chat_id)
+        return
+
+    if text == "📞 Aloqa":
+        show_contact(chat_id)
+        return
+
+    if text == "💼 Qo‘shimcha xizmatlar":
+        show_paid_services(chat_id)
+        return
+
+    # -----------------------------------------
+    # PAID SERVICES
+    # -----------------------------------------
+
+    paid_services = {
+        "📝 Ariza tayyorlash",
+        "📑 Hujjat tahlili",
+        "🧭 Individual yo‘l xaritasi",
+        "📄 Shartnoma tekshiruvi",
+        "📂 Murojaat paketi",
+        "👨‍💼 Mutaxassis bilan aloqa",
+    }
+
+    if text in paid_services:
+        paid_service_info(chat_id, text)
+        return
+
+    # -----------------------------------------
+    # O‘TKAZIB YUBORISH
+    # -----------------------------------------
+
+    if text == "⏭ O‘tkazib yuborish":
+
+        if user["step"] == "contract":
+            user["step"] = "evidence"
+            show_product_step(chat_id)
+            return
+
+        if user["step"] == "evidence":
+            finish_case(chat_id)
+            return
 
         send_message(
             chat_id,
-            "📸 Foto qabul qilindi. ✅\n\n"
-            "Yana foto/fayl yuborishingiz mumkin yoki "
-            "🏁 Yakunlash tugmasini bosing.",
-            finish_keyboard()
+            "Bu bosqichda «O‘tkazib yuborish» ishlatilmaydi.",
         )
+        return
+
+    # -----------------------------------------
+    # MAHSULOT FLOW
+    # -----------------------------------------
+
+    if user["step"] not in ["main", "finish"]:
+        product_question(chat_id, text)
+        return
+
+    # -----------------------------------------
+    # TUSHUNILMAGAN MATN
+    # -----------------------------------------
+
+    send_message(
+        chat_id,
+        "Iltimos, menyudan kerakli bo‘limni tanlang.",
+        main_keyboard(),
+    )
 
 
-# =========================
+# =========================================================
 # WEBHOOK
-# =========================
-
-@app.route("/", methods=["GET", "HEAD"])
-def home():
-    return "Mening Huquqim bot ishlayapti.", 200
-
+# =========================================================
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        update = request.get_json(force=True)
+        update = request.get_json(silent=True) or {}
+
+        print("UPDATE:", update)
+
+        # -----------------------------------------
+        # MESSAGE
+        # -----------------------------------------
 
         message = update.get("message")
 
-        if not message:
-            return jsonify({"ok": True})
+        if message:
+            chat = message.get("chat", {})
+            chat_id = chat.get("id")
 
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
+            if not chat_id:
+                return jsonify({"ok": True})
 
-        if not chat_id:
-            return jsonify({"ok": True})
-
-        # FOTO
-        if "photo" in message:
-            handle_photo(chat_id, message["photo"])
-            return jsonify({"ok": True})
-
-        # HUJJAT
-        if "document" in message:
-            handle_document(chat_id, message["document"])
-            return jsonify({"ok": True})
-
-        # MATN
-        text = message.get("text", "")
-
-        # START
-        if text == "/start":
-            start_bot(chat_id)
-            return jsonify({"ok": True})
-
-        # BOSH MENYU
-        if text == "🏠 Bosh menyu":
-            start_bot(chat_id)
-            return jsonify({"ok": True})
-
-        # ORQAGA
-        if text == "⬅️ Orqaga":
-            start_bot(chat_id)
-            return jsonify({"ok": True})
-
-        # MAHSULOT
-        if text == "🛒 Mahsulot muammosi":
-            start_product_problem(chat_id)
-            return jsonify({"ok": True})
-
-        # STATIK BO‘LIMLAR
-        if text == "💰 Pulni qaytarish":
-            show_refund(chat_id)
-            return jsonify({"ok": True})
-
-        if text == "🛠 Kafolat":
-            show_warranty(chat_id)
-            return jsonify({"ok": True})
-
-        if text == "📎 Kerakli hujjatlar":
-            show_documents(chat_id)
-            return jsonify({"ok": True})
-
-        if text == "⚖️ Huquqlarim":
-            show_rights(chat_id)
-            return jsonify({"ok": True})
-
-        if text == "📞 Aloqa":
-            show_contact(chat_id)
-            return jsonify({"ok": True})
-
-        # PULLIK XIZMATLAR
-        if text == "💼 Qo‘shimcha xizmatlar":
-            show_paid_services(chat_id)
-            return jsonify({"ok": True})
-
-        paid_services = [
-            "📝 Ariza tayyorlash",
-            "📑 Hujjat tahlili",
-            "🧭 Individual yo‘l xaritasi",
-            "📄 Shartnoma tekshiruvi",
-            "📂 Murojaat paketi",
-            "👨‍💼 Mutaxassis bilan aloqa"
-        ]
-
-        if text in paid_services:
-            paid_service_info(chat_id, text)
-            return jsonify({"ok": True})
-
-        # YAKUNLASH
-        if text == "🏁 Yakunlash":
-            data = get_user(chat_id)
-
-            if data.get("section") == "product":
-                finish_case(chat_id)
-            else:
-                start_bot(chat_id)
-
-            return jsonify({"ok": True})
-
-        # O‘TKAZIB YUBORISH
-        if text in ["⏭ O‘tkazib yuborish", "O‘tkazib yuborish"]:
-            data = get_user(chat_id)
-
-            if data.get("section") == "product":
-                data["step"] = "evidence"
-
-                send_message(
+            # TEXT
+            if "text" in message:
+                handle_text(
                     chat_id,
-                    "📎 Qo‘shimcha dalillar mavjud bo‘lsa, "
-                    "ular haqida yozing yoki fayl/foto yuboring.\n\n"
-                    "Yoki yana ⏭ O‘tkazib yuborish tugmasini bosing.",
-                    skip_keyboard()
+                    message.get("text", "").strip(),
                 )
-            else:
-                start_bot(chat_id)
 
-            return jsonify({"ok": True})
+            # DOCUMENT
+            elif "document" in message:
+                handle_document(
+                    chat_id,
+                    message.get("document", {}),
+                )
 
-        # MAHSULOT SAVOLLARI
-        data = get_user(chat_id)
+            # PHOTO
+            elif "photo" in message:
+                handle_photo(
+                    chat_id,
+                    message.get("photo", []),
+                )
 
-        if data.get("section") == "product":
-            product_question(chat_id, text)
-            return jsonify({"ok": True})
+        # -----------------------------------------
+        # CALLBACK QUERY
+        # -----------------------------------------
 
-        # NOMA’LUM BUYRUQ
-        send_message(
-            chat_id,
-            "Iltimos, menyudagi bo‘limlardan birini tanlang.",
-            main_keyboard()
-        )
+        callback_query = update.get("callback_query")
+
+        if callback_query:
+            callback_id = callback_query.get("id")
+            answer_callback(callback_id)
 
         return jsonify({"ok": True})
 
     except Exception as e:
-        print("Webhook error:", e)
-        return jsonify({"ok": True})
+        print("WEBHOOK XATOSI:", repr(e))
+
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+        }), 200
 
 
-# =========================
-# ISHGA TUSHISH
-# =========================
+# =========================================================
+# HEALTH CHECK
+# =========================================================
+
+@app.route("/", methods=["GET"])
+def home():
+    return (
+        "Mening Huquqim bot ishlayapti.",
+        200,
+    )
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "ok",
+        "openai": bool(openai_client),
+        "model": OPENAI_MODEL,
+    })
+
+
+# =========================================================
+# WEBHOOKNI O‘RNATISH
+# =========================================================
+
+def setup_webhook():
+    if not BOT_TOKEN:
+        print("BOT_TOKEN mavjud emas.")
+        return
+
+    try:
+        response = requests.post(
+            f"{TELEGRAM_API}/setWebhook",
+            data={
+                "url": WEBHOOK_URL,
+            },
+            timeout=20,
+        )
+
+        print("Webhook:", response.text)
+
+    except Exception as e:
+        print("Webhook setup error:", repr(e))
+
 
 setup_webhook()
 
+
+# =========================================================
+# START SERVER
+# =========================================================
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+    )
