@@ -1,120 +1,96 @@
+import os
+import logging
+import requests
+from flask import Flask, request, jsonify
 
-def handle_update(update):
-    message = update.get("message") or update.get("edited_message")
-    if not message:
-        return
-    chat_id = (message.get("chat") or {}).get("id")
-    if not chat_id:
-        return
-    text = (message.get("text") or "").strip()
+app = Flask(__name__)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+log = logging.getLogger("mening-huquqim")
 
-    if not text:
-        send_message(chat_id, "Hozircha matnli xabarlarni qabul qilaman. Muammoni matn ko‘rinishida yuboring.")
-        return
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5").strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
-    if text.startswith("/start"):
-        sessions.pop(chat_id, None)
-        send_message(
-            chat_id,
-            "Assalomu alaykum! 👋\n\n"
-            "Men — “Mening Huquqim”. Iste’molchi muammosini dastlabki tahlil qilish, "
-            "kerakli hujjatlarni aniqlash va ariza loyihasini tayyorlashga yordam beraman.\n\n"
-            "Javoblar dastlabki axborot bo‘lib, rasmiy qaror yoki ekspertiza emas. "
-            "Parol, SMS-kod yoki bank karta ma’lumotlarini yubormang."
-        )
-        return
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
+OPENAI_URL = "https://api.openai.com/v1/responses"
 
-    if text.startswith("/muammo") or text == "🛒 Muammom bor":
-        begin_case(chat_id)
-        return
+CONTACT_TEXT = (
+    "📞 Raqobat qo‘mitasi Call-markazi: 1159\n"
+    "✉️ Elektron pochta: info@raqobat.gov.uz\n"
+    "📍 Manzil: 100128, Toshkent shahri, Labzak ko‘chasi, 3-uy\n"
+    "🌐 Rasmiy sayt: https://raqobat.gov.uz/bog-lanish/\n\n"
+    "Eslatma: bot orqali olingan javob rasmiy murojaat ro‘yxatdan o‘tganini anglatmaydi."
+)
 
-    if text.startswith("/ariza") or text == "📝 Ariza tayyorlash":
-        sessions[chat_id] = {"stage": "draft"}
-        send_message(chat_id, "Ariza yoki talabnoma loyihasi uchun muammoni, sotuvchi/tashkilot nomini va talabingizni bitta xabarda yozing. Maxfiy ma’lumotlarni kiritmang.")
-        return
+LAW_LINKS = (
+    "📚 Rasmiy manbalar:\n"
+    "• Qonunchilik hujjatlari bazasi: https://lex.uz/\n"
+    "• Chakana savdo qoidalari: https://lex.uz/acts/-243235\n"
+    "• Raqobat qo‘mitasi aloqa sahifasi: https://raqobat.gov.uz/bog-lanish/\n\n"
+    "Qonun hujjatining amaldagi tahririni rasmiy manbadan tekshiring."
+)
 
-    if text.startswith("/hujjatlar") or text == "📄 Kerakli hujjatlar":
-        send_message(
-            chat_id,
-            "Odatda quyidagi hujjatlar foydali bo‘ladi:\n"
-            "• chek yoki to‘lovni tasdiqlovchi hujjat;\n"
-            "• shartnoma, buyurtma yoki kafolat hujjati;\n"
-            "• nuqson aks etgan foto/video;\n"
-            "• sotuvchiga yuborilgan talabnoma va javob;\n"
-            "• zarar bo‘lsa, uni tasdiqlovchi hujjatlar.\n\n"
-            "Aniq ro‘yxat vaziyatga qarab farq qiladi.\n\n" + LAW_LINKS
-        )
-        return
+KEYBOARD = {
+    "keyboard": [
+        [{"text": "🛒 Muammom bor"}, {"text": "📝 Ariza tayyorlash"}],
+        [{"text": "📚 Huquqlarim haqida"}, {"text": "📄 Kerakli hujjatlar"}],
+        [{"text": "📞 Aloqa"}, {"text": "🔄 Qayta boshlash"}],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
 
-    if text.startswith("/huquqim") or text == "📚 Huquqlarim haqida":
-        send_message(chat_id, "Huquqlar aniq vaziyat va tovar/xizmat turiga qarab belgilanadi. Shaxsiy holatingizni tahlil qilish uchun “🛒 Muammom bor” bo‘limini tanlang.\n\n" + LAW_LINKS)
-        return
+SYSTEM_INSTRUCTIONS = """
+Siz “Mening Huquqim” — O‘zbekiston iste’molchilariga dastlabki yo‘l-yo‘riq beruvchi
+AI yordamchisiz. O‘zbek tilida, lotin yozuvida, sodda va hurmat bilan javob bering.
 
-    if text.startswith("/aloqa") or text == "📞 Aloqa":
-        send_message(chat_id, CONTACT_TEXT)
-        return
+VAZIFA:
+Iste’molchining holatini tahlil qiling, ehtimoliy huquqlarini tushuntiring, dalillarni
+sanang va amaliy keyingi qadamlarni tavsiya qiling.
 
-    if text == "🔄 Qayta boshlash":
-        sessions.pop(chat_id, None)
-        send_message(chat_id, "Suhbat qayta boshlandi. Kerakli bo‘limni tanlang.")
-        return
+ASOSIY HUQUQIY YO‘NALISHLAR:
+- “Iste’molchilarning huquqlarini himoya qilish to‘g‘risida”gi Qonun;
+- chakana savdo qoidalari, jumladan Vazirlar Mahkamasining 75-son qarori va amaldagi tahriri;
+- vaziyat talab qilsa, boshqa tegishli qonunchilik.
+Rasmiy manbalar: https://lex.uz/ va https://raqobat.gov.uz/bog-lanish/
 
-    session = sessions.get(chat_id)
-    if session and session.get("stage") == "draft":
-        sessions.pop(chat_id, None)
-        prompt = (
-            "Quyidagi ma’lumotlar asosida o‘zbek tilida rasmiy ariza yoki talabnoma loyihasini yozing. "
-            "Noma’lum joylarni [to‘ldiring] deb belgilang. Qonun moddalarini taxmin qilmang. "
-            "Oxirida ilova qilinadigan hujjatlar ro‘yxatini bering va loyiha ekanini ayting.\n\n" + text
-        )
-        run_ai(chat_id, prompt)
-        return
+QAT’IY TALABLAR:
+1. Qonun moddasi, bandi, muddat, jarima yoki vakolatni ishonchli bilmasangiz, raqamni taxmin
+   qilmang. Amaldagi tahrirni LexUZ orqali tekshirish zarurligini ayting.
+2. Foydalanuvchi bermagan faktlarni o‘ylab topmang. Dalillar yetishmasa, aniq ko‘rsating.
+3. Yetarli ma’lumot bo‘lmasa, qat’iy xulosa emas, dastlabki baho bering.
+4. Qo‘mita vakolatiga kirmaydigan masalani Qo‘mita albatta hal qiladi deb va’da bermang.
+   Sud, ekspertiza yoki boshqa organ vakolati bo‘lsa, chegarani tushuntiring.
+5. Javob rasmiy qaror, sud qarori, ekspertiza yoki advokat xulosasi o‘rnini bosmaydi.
+6. Parol, SMS-kod, bank karta ma’lumoti yoki keraksiz shaxsiy ma’lumotlarni so‘ramang.
+7. Tovar xavfli bo‘lishi mumkin bo‘lsa, foydalanishni vaqtincha to‘xtatishni va tegishli
+   mutaxassis yoki organga murojaat qilishni tavsiya qiling. Masofadan xavfsizlikni kafolatlamang.
+8. Qonun matniga bevosita kirish imkoningiz yo‘q bo‘lsa, manbani o‘qib tekshirdim deb da’vo qilmang.
 
-    if session:
-        handle_case_answer(chat_id, text)
-        return
+JAVOB TUZILMASI:
+1. Dastlabki baho
+2. Huquqiy asos
+3. Kerakli hujjat va dalillar
+4. Tavsiya etiladigan keyingi qadamlar
+5. Qayerga murojaat qilish
 
-    send_message(chat_id, "Menyudan bo‘lim tanlang yoki /start buyrug‘ini yuboring.")
+Faqat vaziyatga tegishli bo‘limlarni yozing. Kerak bo‘lsa, eng muhim 1–3 aniqlashtiruvchi
+savol bering. O‘zingizni davlat organi deb ko‘rsatmang.
+"""
 
-
-@app.get("/")
-def health():
-    return jsonify({
-        "service": "Mening Huquqim",
-        "status": "ok",
-        "bot_token_configured": bool(BOT_TOKEN),
-        "openai_key_configured": bool(OPENAI_API_KEY),
-        "openai_model": OPENAI_MODEL,
-    })
+# User sessions are kept in memory. They reset if the service restarts.
+sessions = {}
+seen_update_ids = set()
 
 
-@app.post("/webhook")
-def webhook():
-    if WEBHOOK_SECRET:
-        received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if received_secret != WEBHOOK_SECRET:
-            return jsonify({"ok": False}), 403
-
-    update = request.get_json(silent=True) or {}
-    update_id = update.get("update_id")
-    if update_id is not None:
-        if update_id in seen_update_ids:
-            return jsonify({"ok": True, "duplicate": True})
-        seen_update_ids.add(update_id)
-        if len(seen_update_ids) > 5000:
-            seen_update_ids.clear()
-            seen_update_ids.add(update_id)
-
+def telegram_call(method, payload):
+    if not TELEGRAM_API:
+        log.error("BOT_TOKEN is missing")
+        return None
     try:
-        handle_update(update)
-    except Exception as exc:
-        # Do not log incoming user text or secrets.
-        log.exception("Update processing failed: %s", type(exc).__name__)
-        chat_id = ((update.get("message") or {}).get("chat") or {}).get("id")
-        if chat_id:
-            send_message(chat_id, "Kutilmagan xatolik yuz berdi. /start buyrug‘i bilan qayta urinib ko‘ring.")
-    return jsonify({"ok": True})
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+        response = requests.post(
+            f"{TELEGRAM_API}/{method}",
+            json=payload,
+            timeout=20,
+        )
