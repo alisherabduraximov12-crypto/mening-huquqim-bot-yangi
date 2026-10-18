@@ -1,16 +1,18 @@
 import os
 import logging
 import time
+from datetime import datetime, date
+
 import requests
 from flask import Flask, request, jsonify
 
-# Mening Huquqim — bepul, API talab qilmaydigan yordamchi bot
+# Mening Huquqim — bepul, API talab qilmaydigan bot
 # Render Start Command: gunicorn app:app
-# Majburiy muhit o'zgaruvchisi: BOT_TOKEN
+# Majburiy: BOT_TOKEN
 # Ixtiyoriy: WEBHOOK_SECRET, LOG_LEVEL
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -24,8 +26,11 @@ TIMEOUT = 25
 sessions = {}
 seen_updates = set()
 
+# Rasmiy hujjatlar
 LAW_URL = "https://lex.uz/uz/acts/-4704"
 RETAIL_URL = "https://lex.uz/uz/acts/-243235"
+AD_URL = "https://lex.uz/uz/docs/-6052631"
+COMPETITION_URL = "https://lex.uz/uz/docs/-6518381"
 COMMITTEE_URL = "https://raqobat.gov.uz/"
 
 MAIN_KEYBOARD = {
@@ -53,6 +58,8 @@ LIBRARY_KEYBOARD = {
     "keyboard": [
         [{"text": "📕 Iste’molchi qonuni"}],
         [{"text": "📘 Chakana savdo qoidalari"}],
+        [{"text": "📢 Reklama to‘g‘risidagi qonun"}],
+        [{"text": "⚖️ Raqobat to‘g‘risidagi qonun"}],
         [{"text": "⬅️ Asosiy menyu"}],
     ],
     "resize_keyboard": True,
@@ -62,10 +69,23 @@ CANCEL_WORDS = {"bekor", "bekor qilish", "cancel", "orqaga"}
 
 PROMPTS = [
     ("product", "Qaysi mahsulot yoki xizmat bo‘yicha muammo yuz berdi?"),
-    ("purchase_date", "Qachon xarid qilgansiz yoki xizmatdan foydalangansiz? Taxminiy sanani ham yozishingiz mumkin."),
+    (
+        "purchase_date",
+        "Qachon xarid qilgansiz yoki xizmatdan foydalangansiz?\n"
+        "Sanani kun.oy.yil shaklida yozing. Masalan: 15.09.2026.\n"
+        "Aniq eslamasangiz, «bilmayman» deb yozing.",
+    ),
     ("problem", "Muammo nimada? Nima sodir bo‘lganini tushuntiring."),
-    ("seller", "Sotuvchi yoki xizmat ko‘rsatuvchi tashkilot nomini yozing. Bilmasangiz, «bilmayman» deb yozing."),
-    ("evidence", "Qanday dalillaringiz bor? Masalan, chek, shartnoma, kafolat taloni, foto yoki yozishma. Bo‘lmasa, «yo‘q» deb yozing."),
+    (
+        "seller",
+        "Sotuvchi yoki xizmat ko‘rsatuvchi tashkilot nomini yozing. "
+        "Bilmasangiz, «bilmayman» deb yozing.",
+    ),
+    (
+        "evidence",
+        "Qanday dalillaringiz bor? Masalan, chek, shartnoma, kafolat taloni, "
+        "foto yoki yozishma. Bo‘lmasa, «yo‘q» deb yozing.",
+    ),
 ]
 
 
@@ -73,6 +93,7 @@ def telegram(method, payload):
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN sozlanmagan")
         return None
+
     try:
         response = requests.post(
             f"{TELEGRAM_API}/{method}",
@@ -81,18 +102,25 @@ def telegram(method, payload):
         )
         response.raise_for_status()
         result = response.json()
+
         if not result.get("ok"):
             logger.error("Telegram xatosi: %s", result.get("description"))
+
         return result
+
     except (requests.RequestException, ValueError) as exc:
         logger.error("Telegram bilan bog‘lanish xatosi: %s", exc)
         return None
 
 
 def send(chat_id, text, keyboard=MAIN_KEYBOARD):
-    payload = {"chat_id": chat_id, "text": str(text)[:4000]}
+    payload = {
+        "chat_id": chat_id,
+        "text": str(text)[:4000],
+    }
     if keyboard:
         payload["reply_markup"] = keyboard
+
     return telegram("sendMessage", payload)
 
 
@@ -108,6 +136,7 @@ def begin(chat_id, flow):
         "data": {},
         "updated": time.time(),
     }
+
     send(
         chat_id,
         "Ma’lumotlarni navbat bilan yuboring.\n"
@@ -131,14 +160,16 @@ def welcome():
 def documents_text():
     return (
         "📚 QONUNCHILIK KUTUBXONASI\n\n"
-        "1. Iste’molchilarning huquqlarini himoya qilish to‘g‘risidagi Qonun:\n"
+        "📕 1. Iste’molchilarning huquqlarini himoya qilish to‘g‘risidagi Qonun\n"
         + LAW_URL
-        + "\n\n"
-        "2. Vazirlar Mahkamasining 2003-yil 13-fevraldagi 75-son qarori "
-        "— chakana savdo qoidalari:\n"
+        + "\n\n📘 2. VMning 2003-yil 13-fevraldagi 75-son qarori "
+        "— chakana savdo qoidalari\n"
         + RETAIL_URL
-        + "\n\n"
-        "Hujjatning amaldagi tahririni LexUZ orqali tekshiring. "
+        + "\n\n📢 3. Reklama to‘g‘risidagi Qonun\n"
+        + AD_URL
+        + "\n\n⚖️ 4. Raqobat to‘g‘risidagi Qonun\n"
+        + COMPETITION_URL
+        + "\n\nHujjatlarning amaldagi tahririni LexUZ orqali tekshiring. "
         "Qonun va qoidalarga o‘zgartirish kiritilishi mumkin."
     )
 
@@ -151,39 +182,44 @@ def rights_text():
         "• tovar sifati va xavfsizligiga doir huquqlarini himoya qilish;\n"
         "• nuqsonli tovar yoki sifatsiz xizmat bo‘yicha qonuniy talab qo‘yish;\n"
         "• sotuvchi yoki xizmat ko‘rsatuvchiga yozma murojaat qilish;\n"
-        "• vakolatli organga yoki qonunda belgilangan tartibda sudga murojaat qilish "
-        "huquqlariga ega bo‘lishi mumkin.\n\n"
-        "Aniq huquq va talab tovar turi, vaziyat, dalillar va amaldagi qonunchilikka "
-        "bog‘liq. Qonun matni: " + LAW_URL
+        "• vakolatli organga yoki qonunda belgilangan tartibda sudga murojaat "
+        "qilish huquqlariga ega bo‘lishi mumkin.\n\n"
+        "Aniq huquq va talab tovar turi, vaziyat, dalillar va amaldagi "
+        "qonunchilikka bog‘liq. Qonun matni: " + LAW_URL
     )
 
 
 def contact_text():
     return (
         "☎️ RASMIY ALOQA\n\n"
-        "Raqobatni rivojlantirish va iste’molchilar huquqlarini himoya qilish qo‘mitasi\n"
+        "Raqobatni rivojlantirish va iste’molchilar huquqlarini "
+        "himoya qilish qo‘mitasi\n"
         "Call-markaz: 1159\n"
         "Rasmiy sayt: " + COMMITTEE_URL + "\n\n"
-        "Elektron pochta va manzilni rasmiy saytdagi amaldagi ma’lumotlardan tekshiring."
+        "Elektron pochta va manzilni rasmiy saytdagi amaldagi "
+        "ma’lumotlardan tekshiring."
     )
 
 
 def build_application(data, flow):
     if flow == "committee":
-        recipient = "Raqobat qo‘mitasiga"
+        recipient = "Raqobatni rivojlantirish va iste’molchilar "
+        recipient += "huquqlarini himoya qilish qo‘mitasiga"
         title = "MUROJAAT"
         request_text = (
-            "Murojaatimni ko‘rib chiqishingizni, masalaning Qo‘mita vakolatiga "
-            "taalluqliligini baholashingizni va vakolat doirasida qonuniy chora "
-            "ko‘rish masalasini hal etishingizni so‘rayman."
+            "Murojaatimni ko‘rib chiqishingizni, masalaning Qo‘mita "
+            "vakolatiga taalluqliligini baholashingizni va vakolat "
+            "doirasida qonuniy chora ko‘rish masalasini hal etishingizni "
+            "so‘rayman."
         )
     else:
         recipient = data.get("seller", "[sotuvchi nomi]")
         title = "TALABNOMA"
         request_text = (
-            "Yuqoridagi holatni o‘rganib chiqishingizni va amaldagi qonunchilik "
-            "doirasida muammoni hal etishingizni so‘rayman. Talabimni ko‘rib chiqib, "
-            "menga yozma javob berishingizni so‘rayman."
+            "Yuqoridagi holatni o‘rganib chiqishingizni va amaldagi "
+            "qonunchilik doirasida muammoni hal etishingizni so‘rayman. "
+            "Talabimni ko‘rib chiqib, menga yozma javob berishingizni "
+            "so‘rayman."
         )
 
     return (
@@ -202,25 +238,31 @@ def build_application(data, flow):
         "Sana: [to‘ldiriladi]\n"
         "Imzo: [to‘ldiriladi]\n\n"
         "ESLATMA: Bu namuna. Yuborishdan oldin shaxsiy ma’lumotlarni, "
-        "aniq talabni va ilovalarni to‘ldiring. Faqat mavjud hujjatlarni ilova qiling. "
-        "Qo‘mitaga murojaat loyihasi muammoning Qo‘mita vakolatiga kirishini "
-        "avtomatik ravishda tasdiqlamaydi."
+        "aniq talabni va ilovalarni to‘ldiring. Faqat mavjud hujjatlarni "
+        "ilova qiling. Qo‘mitaga murojaat loyihasi muammoning Qo‘mita "
+        "vakolatiga kirishini avtomatik ravishda tasdiqlamaydi."
     )
 
 
 def build_guidance(data):
+    # Foydalanuvchiga ma’qul bo‘lgan dastlabki yo‘l-yo‘riq matni saqlandi.
     product = data.get("product", "ko‘rsatilmagan")
     problem = data.get("problem", "ko‘rsatilmagan")
+
     safety_words = [
         "tutun", "yonib", "uchqun", "portlash", "tok ur",
         "gaz hidi", "qizib ket", "xavfli",
     ]
     safety = ""
-    if any(word in (product + " " + problem).casefold() for word in safety_words):
+
+    if any(
+        word in (product + " " + problem).casefold()
+        for word in safety_words
+    ):
         safety = (
-            "\n\n⚠️ XAVFSIZLIK: Mahsulot xavf tug‘dirayotgan bo‘lsa, undan foydalanishni "
-            "to‘xtating. Xavfli qurilmani o‘zingiz ta’mirlashga urinmang va tegishli "
-            "mutaxassis yoki favqulodda xizmatga murojaat qiling."
+            "\n\n⚠️ XAVFSIZLIK: Mahsulot xavf tug‘dirayotgan bo‘lsa, undan "
+            "foydalanishni to‘xtating. Xavfli qurilmani o‘zingiz ta’mirlashga "
+            "urinmang va tegishli mutaxassis yoki favqulodda xizmatga murojaat qiling."
         )
 
     return (
@@ -235,20 +277,54 @@ def build_guidance(data):
         "hamda qonuniy shartlarga bog‘liq. Aniq talabni hujjatlar asosida tekshiring.\n"
         "5. Muammo hal bo‘lmasa, Qo‘mita vakolatiga kirishini aniqlab, 1159 orqali "
         "maslahat oling yoki rasmiy saytga murojaat qiling: " + COMMITTEE_URL + "\n\n"
-        "Kerakli hujjatlar: chek yoki boshqa to‘lov isboti, shartnoma/kafolat hujjati, "
-        "foto-video, sotuvchiga murojaat va javob.\n\n"
+        "Kerakli hujjatlar: chek yoki boshqa to‘lov isboti, shartnoma/kafolat "
+        "hujjati, foto-video, sotuvchiga murojaat va javob.\n\n"
         "Bu avtomatik dastlabki tavsiya, rasmiy huquqiy xulosa emas. "
         "Qonunchilik kutubxonasi: " + LAW_URL + safety
     )
 
 
+def valid_purchase_date(value):
+    value = value.strip()
+
+    if value.casefold() in {
+        "bilmayman", "eslay olmayman", "aniq eslay olmayman"
+    }:
+        return True
+
+    parsed = None
+
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            parsed = datetime.strptime(value, fmt).date()
+            break
+        except ValueError:
+            continue
+
+    if parsed is None:
+        return False
+
+    return parsed <= date.today()
+
+
 def process_step(chat_id, text, session):
     index = session["step_index"]
     key = PROMPTS[index][0]
+
+    if key == "purchase_date" and not valid_purchase_date(text):
+        send(
+            chat_id,
+            "Sana noto‘g‘ri formatda kiritildi yoki kelajakdagi sana ko‘rsatildi.\n"
+            "Sanani kun.oy.yil shaklida yozing. Masalan: 15.09.2026.\n"
+            "Aniq eslamasangiz, «bilmayman» deb yozing.",
+        )
+        return
+
     session["data"][key] = text
     session["updated"] = time.time()
 
     next_index = index + 1
+
     if next_index < len(PROMPTS):
         session["step_index"] = next_index
         send(chat_id, PROMPTS[next_index][1])
@@ -259,10 +335,7 @@ def process_step(chat_id, text, session):
     reset(chat_id)
 
     if flow in {"seller_claim", "committee"}:
-        answer = build_application(
-            data,
-            "committee" if flow == "committee" else "seller",
-        )
+        answer = build_application(data, flow)
     else:
         answer = build_guidance(data)
 
@@ -272,18 +345,20 @@ def process_step(chat_id, text, session):
 def handle_message(message):
     chat_id = (message.get("chat") or {}).get("id")
     text = (message.get("text") or "").strip()
+
     if not chat_id:
         return
+
     if not text:
         send(chat_id, "Iltimos, matnli xabar yuboring yoki menyudan bo‘lim tanlang.")
         return
 
     lower = text.casefold()
 
-    # Menyu buyruqlari har doim faol sessiyadan ustun turadi.
+    # Asosiy buyruqlar va menyu har doim faol suhbatdan ustun.
     if lower in {"/start", "/help", "start"}:
         reset(chat_id)
-        send(chat_id, welcome())
+        send(chat_id, welcome(), MAIN_KEYBOARD)
         return
 
     if lower in CANCEL_WORDS or text == "⬅️ Asosiy menyu":
@@ -295,13 +370,12 @@ def handle_message(message):
         begin(chat_id, "problem")
         return
 
-    if text == "📝 Ariza va talabnoma" or lower == "/ariza":
+    if (
+        text == "📝 Ariza va talabnoma"
+        or lower in {"/ariza", "ariza", "ariza va talabnoma", "talabnoma"}
+    ):
         reset(chat_id)
-        send(
-            chat_id,
-            "Qaysi hujjatni tayyorlaymiz? Kerakli turini tanlang.",
-            DOC_KEYBOARD,
-        )
+        send(chat_id, "Qaysi hujjatni tayyorlaymiz?", DOC_KEYBOARD)
         return
 
     if text == "📝 Sotuvchiga talabnoma":
@@ -312,39 +386,71 @@ def handle_message(message):
         begin(chat_id, "committee")
         return
 
-    if text == "📚 Qonunchilik kutubxonasi" or lower == "/qonun":
+    if (
+        text == "📚 Qonunchilik kutubxonasi"
+        or lower in {"/qonun", "/hujjatlar", "qonunchilik", "kutubxona"}
+    ):
         reset(chat_id)
         send(chat_id, "Qaysi hujjatni ko‘rmoqchisiz?", LIBRARY_KEYBOARD)
         return
 
-    if text == "📕 Iste’molchi qonuni":
+    # Kutubxona hujjatlari: tugma yoki oddiy matn orqali tanlash.
+    if text == "📕 Iste’molchi qonuni" or lower in {
+        "iste’molchi qonuni", "istemolchi qonuni", "iste’molchi huquqlari"
+    }:
+        reset(chat_id)
         send(
             chat_id,
             "📕 Iste’molchilarning huquqlarini himoya qilish to‘g‘risidagi Qonun:\n"
-            + LAW_URL
-            + "\n\nLexUZ’dagi amaldagi tahririni tekshiring.",
+            + LAW_URL + "\n\nLexUZ’dagi amaldagi tahririni tekshiring.",
             LIBRARY_KEYBOARD,
         )
         return
 
-    if text == "📘 Chakana savdo qoidalari":
+    if text == "📘 Chakana savdo qoidalari" or lower in {
+        "75-son qaror", "75 qaror", "chakana savdo", "chakana savdo qoidalari"
+    }:
+        reset(chat_id)
         send(
             chat_id,
-            "📘 VMning 2003-yil 13-fevraldagi 75-son qarori:\n"
-            + RETAIL_URL
-            + "\n\nLexUZ’dagi amaldagi tahririni tekshiring.",
+            "📘 VMning 2003-yil 13-fevraldagi 75-son qarori — chakana savdo qoidalari:\n"
+            + RETAIL_URL + "\n\nLexUZ’dagi amaldagi tahririni tekshiring.",
+            LIBRARY_KEYBOARD,
+        )
+        return
+
+    if text == "📢 Reklama to‘g‘risidagi qonun" or lower in {
+        "reklama", "reklama qonuni", "reklama to‘g‘risida"
+    }:
+        reset(chat_id)
+        send(
+            chat_id,
+            "📢 Reklama to‘g‘risidagi Qonun:\n"
+            + AD_URL + "\n\nLexUZ’dagi amaldagi tahririni tekshiring.",
+            LIBRARY_KEYBOARD,
+        )
+        return
+
+    if text == "⚖️ Raqobat to‘g‘risidagi qonun" or lower in {
+        "raqobat", "raqobat qonuni", "raqobat to‘g‘risida"
+    }:
+        reset(chat_id)
+        send(
+            chat_id,
+            "⚖️ Raqobat to‘g‘risidagi Qonun:\n"
+            + COMPETITION_URL + "\n\nLexUZ’dagi amaldagi tahririni tekshiring.",
             LIBRARY_KEYBOARD,
         )
         return
 
     if text == "⚖️ Huquqlarim haqida" or lower == "/huquqim":
         reset(chat_id)
-        send(chat_id, rights_text())
+        send(chat_id, rights_text(), MAIN_KEYBOARD)
         return
 
     if text == "☎️ Qo‘mita bilan aloqa" or lower == "/aloqa":
         reset(chat_id)
-        send(chat_id, contact_text())
+        send(chat_id, contact_text(), MAIN_KEYBOARD)
         return
 
     session = sessions.get(str(chat_id))
@@ -352,7 +458,11 @@ def handle_message(message):
         process_step(chat_id, text, session)
         return
 
-    send(chat_id, "Menyudan bo‘lim tanlang yoki /start buyrug‘ini yuboring.")
+    send(
+        chat_id,
+        "Menyudan bo‘lim tanlang yoki /start buyrug‘ini yuboring.",
+        MAIN_KEYBOARD,
+    )
 
 
 @app.get("/")
@@ -388,7 +498,9 @@ def webhook():
     if update_id is not None:
         if update_id in seen_updates:
             return jsonify({"ok": True, "duplicate": True}), 200
+
         seen_updates.add(update_id)
+
         if len(seen_updates) > 3000:
             seen_updates.clear()
             seen_updates.add(update_id)
@@ -400,7 +512,6 @@ def webhook():
     except Exception:
         logger.exception("Yangilanishni qayta ishlashda xato")
 
-    # Telegram qayta-qayta yuborib qolmasligi uchun xato logga yoziladi.
     return jsonify({"ok": True}), 200
 
 
